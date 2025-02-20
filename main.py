@@ -1,85 +1,72 @@
 import streamlit as st
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
-import torch
-import fitz
-import PyPDF2
+import numpy as np
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+from tensorflow.keras.models import load_model
+from tensorflow.keras.preprocessing.image import load_img, img_to_array
+import matplotlib.pyplot as plt
 import pickle
-import re
-from nltk.corpus import stopwords
-from nltk.stem import PorterStemmer
-import nltk
-from PIL import Image
-nltk.download("stopwords")
-stop_words = set(stopwords.words('english'))
-stemmer = PorterStemmer()
-,
-model_name = ""
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForSequenceClassification.from_pretrained(model_name)
-label_encoder = pickle.load(open("label_encoder.pkl", 'rb'))
 
-def clean_text(text):
-    text = text.lower()  # Convert to lowercase
-    text = re.sub(r"[^\w\s]", "", text)  # Remove special characters
-    text = re.sub(r"\s+", " ", text)  # Remove extra whitespace
-    text = " ".join([stemmer.stem(word) for word in text.split() if word not in stop_words])  # Remove stopwords and stem
-    return text
 
-def predict(text):
-    # Clean the input text
-    text = clean_text(text)
+# Function to generate and display caption
+def generate_and_display_caption(image_path, model_path, tokenizer_path, feature_extractor_path, max_length=34,img_size=224):
+    # Load the trained models and tokenizer
+    caption_model = load_model(model_path)
+    feature_extractor = load_model(feature_extractor_path)
 
-    # Tokenize the input text
-    inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True, max_length=128)
+    with open(tokenizer_path, "rb") as f:
+        tokenizer = pickle.load(f)
 
-    # Make prediction
-    with torch.no_grad():
-        outputs = model(**inputs)
-        logits = outputs.logits
-        predicted_class = torch.argmax(logits, dim=1).item()
+    # Preprocess the image
+    img = load_img(image_path, target_size=(img_size, img_size))
+    img = img_to_array(img) / 255.0  # Normalize pixel values
+    img = np.expand_dims(img, axis=0)
+    image_features = feature_extractor.predict(img, verbose=0)  # Extract image features
 
-    return label_encoder.inverse_transform([predicted_class])[0]
+    # Generate the caption
+    in_text = "startseq"
+    for i in range(max_length):
+        sequence = tokenizer.texts_to_sequences([in_text])[0]
+        sequence = pad_sequences([sequence], maxlen=max_length)
+        yhat = caption_model.predict([image_features, sequence], verbose=0)
+        yhat_index = np.argmax(yhat)
+        word = tokenizer.index_word.get(yhat_index, None)
+        if word is None:
+            break
+        in_text += " " + word
+        if word == "endseq":
+            break
+    caption = in_text.replace("startseq", "").replace("endseq", "").strip()
 
-# Function to extract text from PDF
-def extract_text_from_pdf(file):
-    pdf_reader = PyPDF2.PdfReader(file)
-    text = ""
-    for page in range(len(pdf_reader.pages)):
-        text += pdf_reader.pages[page].extract_text()
-    return text
+    # Display the image with the generated caption
+    img = load_img(image_path, target_size=(img_size, img_size))
+    plt.figure(figsize=(8, 8))
+    plt.imshow(img)
+    plt.axis('off')
+    plt.title(caption, fontsize=16, color='blue')
+    st.pyplot(plt)  # Display image in Streamlit
 
-# Function to render PDF pages as images
-def render_pdf(file):
-    file.seek(0)  # Reset file pointer to the start
-    pdf_document = fitz.open(stream=file.read(), filetype="pdf")
-    images = []
-    for page_number in range(len(pdf_document)):
-        page = pdf_document[page_number]
-        pix = page.get_pixmap()
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        images.append(img)
-    return images
 
-st.title("Document Classifier with Transformer")
-st.write("Upload a PDF file to classify its content into different categories.")
+# Streamlit app interface
+def main():
+    st.title("Image Caption Generator")
+    st.write("Upload an image and generate a caption using the trained model.")
 
-# Upload file
-uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
+    # Upload the image
+    uploaded_image = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
 
-if uploaded_file is not None:
-    # Extract text from PDF for classification
-    text = extract_text_from_pdf(uploaded_file)
+    if uploaded_image is not None:
+        # Save the uploaded image temporarily
+        with open("uploaded_image.jpg", "wb") as f:
+            f.write(uploaded_image.getbuffer())
 
-    # Predict class of the extracted text
-    predicted_class = predict(text)
+        # Paths for the saved models and tokenizer
+        model_path = "model.keras"  # Replace with the actual path
+        tokenizer_path = "tokenizer.pkl"  # Replace with the actual path
+        feature_extractor_path = "feature_extractor.keras"  # Replace with the actual path
 
-    # Display predicted class
-    st.subheader("Predicted Class:")
-    st.info(predicted_class)
+        # Generate caption and display image with caption
+        generate_and_display_caption("uploaded_image.jpg", model_path, tokenizer_path, feature_extractor_path)
 
-    # Render PDF and display as images
-    st.subheader("PDF Preview:")
-    pdf_images = render_pdf(uploaded_file)
-    for img in pdf_images:
-        st.image(img, use_container_width=True)
 
+if __name__ == "__main__":
+    main()
